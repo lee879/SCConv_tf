@@ -7,8 +7,6 @@ class GroupNormalization_sp(Layer):
                  num_groups: int,
                  num_channels: int,
                  eps: float = 1e-6,
-                 gamma_initializer='ones',
-                 beta_initializer='zeros',
                  **kwargs
                  ):
         super(GroupNormalization_sp, self).__init__(**kwargs)
@@ -16,18 +14,15 @@ class GroupNormalization_sp(Layer):
         self.num_groups = num_groups
         self.num_channels = num_channels
         self.eps = eps
-        self.gamma_initializer = tf.keras.initializers.get(gamma_initializer)
-        self.beta_initializer = tf.keras.initializers.get(beta_initializer)
 
     def build(self, input_shape):
-        self.gamma = self.add_weight(name='gamma',
-                                     shape=(self.num_channels,),
-                                     initializer=self.gamma_initializer,
+
+        self.gamma = self.add_variable(name='gamma', shape=(self.num_channels,),
+                        initializer=tf.keras.initializers.Constant(value=1.0),
+                        trainable=True)
+        self.beta = self.add_variable(name='beta', shape=(self.num_channels,),
+                                     initializer=tf.keras.initializers.Constant(value=0.0),
                                      trainable=True)
-        self.beta = self.add_weight(name='beta',
-                                    shape=(self.num_channels,),
-                                    initializer=self.beta_initializer,
-                                    trainable=True)
         super(GroupNormalization_sp, self).build(input_shape)
 
     def call(self, inputs, **kwargs):
@@ -48,13 +43,13 @@ class GroupNormalization_sp(Layer):
 
         output = normalized_output * normalized_w
 
-        return output
+        return normalized_output
 
 class SRU(Layer):
-    def __init__(self, num_channels: int, num_groups: int, ratio: int = 2):
+    def __init__(self, num_channels: int, ratio: int = 2):
         super(SRU, self).__init__()
-        self.gn = GroupNormalization_sp(num_groups=num_groups, num_channels=num_channels)
-        self.ac = Activation(tf.nn.sigmoid)
+       # self.gn = GroupNormalization_sp(num_groups=num_groups, num_channels=num_channels)
+        #self.ac = Activation(tf.nn.sigmoid)
         self.ratio = ratio
         self.num_channels = num_channels
 
@@ -71,7 +66,7 @@ class SRU(Layer):
 
         return median_values
     def call(self, inputs, **kwargs):
-        normal_inputs = self.ac(self.gn(inputs))
+        normal_inputs = inputs
 
         threshold = tf.reduce_mean(self.batch_median(normal_inputs))
 
@@ -133,16 +128,23 @@ class CRU(Layer):
         out = tf.add(output_0, output_1)
         return out
 
-class SCConv(Model):
+class SCConv(Layer):
     def __init__(self, input_channels, num_groups=8):
         super(SCConv, self).__init__()
-        self.sru = SRU(num_channels=input_channels, num_groups=num_groups)
-        self.cru = CRU(input_channels=input_channels)
-        self.point_conv_input = Conv2D(input_channels, 1, 1, "same")
-        self.point_conv_out = Conv2D(input_channels, 1, 1, "same")
+        self.gn = GroupNormalization_sp( num_groups = num_groups,num_channels= input_channels)
+        self.acs = Activation(tf.nn.sigmoid)
+        self.input_channels = input_channels
+        self.num_groups = num_groups
+        self.sru = SRU(num_channels=self.input_channels)
+        self.cru = CRU(input_channels=self.input_channels)
+        self.point_conv_input = Conv2D(self.input_channels, 1, 1, "same",use_bias=False)
+    def build(self, input_shape):
+        self.point_conv_out = Conv2D(np.array(input_shape[3]), 1, 1, "same",use_bias=False)
+        super(SCConv, self).build(input_shape)
 
-    def call(self, inputs, training=None, mask=None):
+    def call(self, inputs,  **kwargs):
         x = self.point_conv_input(inputs)
+        x = self.acs(self.gn(x))
         y0 = self.sru(x)
         y1 = self.cru(y0)
         z = self.point_conv_out(y1)
